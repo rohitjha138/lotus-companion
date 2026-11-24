@@ -16,6 +16,10 @@ Open the **Claude desktop app → Code** (or Claude Code in a terminal) on your 
 Claude clones this repo, runs the installer, and walks you through signing in and the few macOS
 permissions only you can click. About five minutes. Lotus is Mac-only for now (macOS 14 or later).
 
+**It's completely free.** No payment, no subscription, no Apple Developer account — for you or anyone
+you share it with. You only need your own Claude account (which you already have). The installer builds
+Lotus on your Mac and signs it locally, so macOS doesn't flag it.
+
 <details>
 <summary>Or install it yourself in Terminal</summary>
 

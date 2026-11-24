@@ -995,7 +995,17 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
     private var awake = false  // tapped: treat the next thing said as a request, no wake word needed
     var muted = false
     var sessionID: String? {
-        get { defaults.string(forKey: "sessionID") }
+        get {
+            guard let id = defaults.string(forKey: "sessionID") else { return nil }
+            // Resuming reloads the whole conversation each time, so a long session makes every reply slower.
+            // Past ~500 KB, start fresh; the memory file keeps what matters.
+            let file = Housekeeping.sessions.appendingPathComponent("\(id).jsonl")
+            if ((try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0) > 500_000 {
+                defaults.removeObject(forKey: "sessionID")
+                return nil
+            }
+            return id
+        }
         set { defaults.set(newValue, forKey: "sessionID") }
     }
 
