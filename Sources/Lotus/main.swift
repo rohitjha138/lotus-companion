@@ -140,6 +140,8 @@ enum Agent {
     static let cache = home.appendingPathComponent("Library/Caches/Lotus")
     static let resources = Bundle.main.resourcePath ?? "/Applications/Lotus.app/Contents/Resources"
 
+    static var userName: String { defaults.string(forKey: "userName") ?? "" }
+
     static var persona: String { """
     You are Lotus, the user's sharp, warm companion on their Mac, talking with them by voice. Be brief and \
     quick-witted: use as few words as possible, usually one short sentence. When a task is done, just say so, \
@@ -218,6 +220,7 @@ enum Agent {
     - Clicking: run \(lotus) --click X Y using pixel coordinates from the screenshot (add --double or --right).
     - Typing: osascript -e 'tell application "System Events" to keystroke "text"' (key code 36 is Return).
 
+    \(userName.isEmpty ? "" : "The user's name is \(userName). Use it warmly and naturally now and then, for example when they thank you.")
     Be their tutor and research partner in whatever they're learning: teach step by step, quiz them \
     gently, explain papers and methods, find current research, and build on their own ideas instead of \
     replacing them. Learn alongside them.
@@ -1051,7 +1054,7 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     func startListening() {
-        guard !busy, !muted, task == nil, let recognizer, recognizer.isAvailable else { return }
+        guard !muted, task == nil, let recognizer, recognizer.isAvailable else { return }  // runs during speech too, for barge-in
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         // Privacy: keep speech recognition on this Mac. Never send audio to Apple's servers.
@@ -1102,22 +1105,35 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     private func heard(_ result: SFSpeechRecognitionResult?, _ error: Error?) {
-        if let text = result?.bestTranscription.formattedString,
-           let cmd = awake ? (command(after: text) ?? clean(text.lowercased())) : command(after: text) {
+        let text = result?.bestTranscription.formattedString ?? ""
+        // While Lotus is talking or working, saying its name cuts it off right away.
+        if busy {
+            if bargeIn(text) {
+                stop()
+                if let cmd = command(after: text), !cmd.isEmpty { ask(cmd) }
+            }
+        } else if let cmd = awake ? (command(after: text) ?? clean(text.lowercased())) : command(after: text) {
             awake = true
             model.mood = .listening
             show(cmd.isEmpty ? "I'm listening…" : cmd)
             // Wait for a pause in speech before acting; allow longer after a bare "Hey Claude".
             // Wait until you've really finished: a short start is often a thinking pause, so wait longer.
-            let pause = defaults.object(forKey: "pauseSeconds") as? Double ?? 1.8
+            let pause = defaults.object(forKey: "pauseSeconds") as? Double ?? 1.4
             let words = cmd.split(separator: " ").count
-            armSilence(cmd, wait: words == 0 ? 6 : words < 4 ? pause + 1 : pause)
+            armSilence(cmd, wait: words == 0 ? 5 : pause)  // only a bare wake word waits long
         }
         // Recognition tasks end on their own after a while; start a fresh one.
         if error != nil || result?.isFinal == true {
             stopListening()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.startListening() }
         }
+    }
+
+    /// A tighter wake check for interrupting: only the name itself, so Lotus's own speech (which may
+    /// say "hey there") doesn't cut itself off.
+    private func bargeIn(_ text: String) -> Bool {
+        let t = text.lowercased()
+        return ["buddy", "claude", "clawed", "klaud"].contains { t.contains($0) }
     }
 
     private func armSilence(_ cmd: String, wait: Double) {
@@ -1162,6 +1178,7 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
             return say("I can't see your screen yet. Switch Lotus on in Screen Recording, the page I just opened, then choose Quit and Reopen.")
         }
         show("“\(text)”\n\(screen ? "Looking at your screen…" : "On it…")")
+        startListening()  // keep hearing you while it works, so "Buddy, stop" interrupts
         var request = lastSaid.map { "(You just said to me: \"\($0)\") \(text)" } ?? text
         lastSaid = nil
         if !spoken {
@@ -1203,7 +1220,7 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
         let spoken = ["**", "*", "#", "`"].reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
         let kokoro = defaults.string(forKey: "kokoroVoice") ?? (voiceStyle == "deep" ? "am_michael" : "af_heart")
         // Words appear the moment the voice starts, not before.
-        let begin = { [weak self] in self?.model.mood = .speaking; self?.show(text) }
+        let begin = { [weak self] in self?.model.mood = .speaking; self?.show(text); self?.startListening() }
         neural.speak(spoken, voice: kokoro, started: begin) { [weak self] ok in
             if ok { self?.doneSpeaking() } else { begin(); self?.systemSpeak(spoken) }
         }
