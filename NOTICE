@@ -1,0 +1,13 @@
+Lotus
+Copyright (c) 2026 Voyager (github.com/rohitjha138)
+
+This is an original work, created and owned by Voyager, released under the MIT
+License (see LICENSE). You may use, copy, modify and share it, including for your
+own companion, as long as this copyright notice and the license are kept.
+
+Lotus is an independent project. It is not made by or affiliated with Anthropic.
+"Claude" and "Claude Code" are products and trademarks of Anthropic.
+
+Third-party components (downloaded by the installers, not included in this
+repository) keep their own licenses: Kokoro-82M, kokoro-onnx, ComfyUI,
+RealVisXL, auto-editor, ffmpeg, yt-dlp. See README.md › Credits.

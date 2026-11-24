@@ -1,4 +1,6 @@
-// Lotus: a desktop buddy that sits on your screen, listens for "Hey Claude", and runs Claude Code for you.
+// Lotus — a voice companion that lives on your Mac, powered by Claude.
+// Copyright (c) 2026 Voyager. MIT License (see LICENSE). Original work; the lotus is for someone dear.
+// Project: https://github.com/rohitjha138/lotus-companion
 import AppKit
 import AVFoundation
 import ServiceManagement
