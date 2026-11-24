@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Lotus</string>
+    <key>CFBundleDisplayName</key><string>Lotus</string>
+    <key>CFBundleIdentifier</key><string>dev.ember.companion</string>
+    <key>CFBundleExecutable</key><string>Lotus</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>NSMicrophoneUsageDescription</key><string>Lotus listens for “Hey Buddy” and your requests.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>Lotus turns your speech into text on this Mac.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Lotus controls apps when you ask it to.</string>
+</dict>
+</plist>
