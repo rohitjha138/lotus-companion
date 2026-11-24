@@ -61,7 +61,7 @@ talk to: one that remembers what I'm working on, sees what I'm looking at and do
 me, without handing my data to yet another service. So I made one, and I'm sharing it so anyone can have
 their own.
 
-The lotus is inspired by my girlfriend.
+The lotus is for someone I admire, who keeps teaching me and helping me grow.
 
 — Voyager
 
