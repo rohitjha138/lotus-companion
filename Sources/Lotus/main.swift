@@ -442,7 +442,8 @@ enum Agent {
             if reply.contains("Not logged in") {
                 return finish("I'm not signed in yet. Click the lotus in the menu bar and choose Sign in to Claude. You only do it once.", nil)
             }
-            if limited, let backup = Fallback.answer(prompt) {
+            // A backup model can't read files/screenshots, so send just the words.
+            if limited, let backup = Fallback.answer(request) {
                 return finish(backup, id)  // Claude's hit its limit; another model answered so you're not stuck
             }
             finish(reply, id)
@@ -1196,6 +1197,8 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
             if bargeIn(text) {
                 stop()
                 if let cmd = command(after: text), !cmd.isEmpty { ask(cmd) }
+                else { awake = true; show("I'm listening…") }  // "buddy" alone: take what they say next
+                return  // don't let the trailing restart below fight the barge-in
             }
         } else if let cmd = awake ? (command(after: text) ?? clean(text.lowercased())) : command(after: text) {
             awake = true
@@ -1203,7 +1206,7 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
             show(cmd.isEmpty ? "I'm listening…" : cmd)
             // Wait for a pause in speech before acting; allow longer after a bare "Hey Claude".
             // Wait until you've really finished: a short start is often a thinking pause, so wait longer.
-            let pause = defaults.object(forKey: "pauseSeconds") as? Double ?? 1.4
+            let pause = defaults.object(forKey: "pauseSeconds") as? Double ?? 1.2
             let words = cmd.split(separator: " ").count
             armSilence(cmd, wait: words == 0 ? 5 : pause)  // only a bare wake word waits long
         }
@@ -1218,7 +1221,8 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
     /// say "hey there") doesn't cut itself off.
     private func bargeIn(_ text: String) -> Bool {
         let t = text.lowercased()
-        return ["buddy", "claude", "clawed", "klaud"].contains { t.contains($0) }
+        // Only "buddy": Lotus's own replies may contain "Claude", and through a speaker it would hear itself.
+        return ["buddy", "body"].contains { t.contains($0) }
     }
 
     private func armSilence(_ cmd: String, wait: Double) {
