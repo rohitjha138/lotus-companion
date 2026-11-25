@@ -57,6 +57,16 @@ account, so every Lotus is its owner's alone.
 | **Your instructions** | Tell it once how you like things done; it follows them every time. |
 | **From your phone** | Phone access lets the Claude app reach your Mac through your Claude account. |
 | **Sounds human** | A natural voice (Kokoro) that runs offline. Sweet or deep. |
+| **Never gets stuck** | If Claude hits its usage limit, Lotus keeps answering on Gemini or ChatGPT (your keys, added in the menu). A Gemini key is free. |
+
+## Backup AI (never get stuck at a limit)
+
+If Claude reaches its usage limit mid-conversation, Lotus automatically answers with **Gemini** or
+**ChatGPT** so you're not stuck. Menu bar lotus › **Backup AI (Gemini/ChatGPT)…** opens a small file
+(`~/Lotus/providers.json`) where you paste a key — a Gemini key is **free** from
+[aistudio.google.com](https://aistudio.google.com/apikey). Keys stay on your Mac and are never in this
+repo. (A backup model can answer and research, but can't control your Mac; it hands actions back to
+Claude once you're off the limit.)
 
 ## Why I built it
 

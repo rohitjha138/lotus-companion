@@ -90,6 +90,8 @@ func selfTest() {
     precondition(Pointer.toPoints(pixelX: 200, pixelY: 100, scale: 2) == CGPoint(x: 100, y: 50))
     precondition(Agent.parse(#"{"type":"result","result":"Done!","session_id":"abc"}"#) == ("Done!", "abc"))
     precondition(Agent.parse("not json").1 == nil)
+    precondition(Agent.parseFull(#"{"result":"Claude usage limit reached","is_error":true}"#).2 == true)
+    precondition(Agent.parseFull(#"{"result":"all good","is_error":false}"#).2 == false)
     print("self-test passed")
 }
 
@@ -336,13 +338,22 @@ enum Agent {
     }
 
     static func parse(_ output: String) -> (String, String?) {
+        let (reply, id, _) = parseFull(output)
+        return (reply, id)
+    }
+
+    static func parseFull(_ output: String) -> (String, String?, Bool) {
         guard let data = output.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             let tail = output.trimmingCharacters(in: .whitespacesAndNewlines).suffix(300)
-            return (tail.isEmpty ? "Something went wrong talking to Claude Code." : String(tail), nil)
+            return (tail.isEmpty ? "Something went wrong talking to Claude Code." : String(tail), nil, false)
         }
         let reply = (json["result"] as? String) ?? "Done."
-        return (reply, json["session_id"] as? String)
+        let isError = (json["is_error"] as? Bool) ?? false
+        let low = reply.lowercased()
+        let limited = isError && (low.contains("usage limit") || low.contains("rate limit") ||
+                                  low.contains("limit reached") || low.contains("too many requests") || low.contains("quota"))
+        return (reply, json["session_id"] as? String, limited)
     }
 
     /// Saves the main display to a private cache file inside your home folder.
@@ -427,9 +438,12 @@ enum Agent {
             try? input.fileHandleForWriting.close()
             let data = output.fileHandleForReading.readDataToEndOfFile()
             proc.waitUntilExit()
-            let (reply, id) = parse(String(decoding: data, as: UTF8.self))
+            let (reply, id, limited) = parseFull(String(decoding: data, as: UTF8.self))
             if reply.contains("Not logged in") {
                 return finish("I'm not signed in yet. Click the lotus in the menu bar and choose Sign in to Claude. You only do it once.", nil)
+            }
+            if limited, let backup = Fallback.answer(prompt) {
+                return finish(backup, id)  // Claude's hit its limit; another model answered so you're not stuck
             }
             finish(reply, id)
         }
@@ -583,6 +597,77 @@ struct Buddy: View {
         case .idle, .waving:
             EmptyView()
         }
+    }
+}
+
+// MARK: - Fallback AI (Gemini / OpenAI)
+
+/// When Claude hits its usage limit, Lotus keeps talking by asking another model. Keys live in
+/// ~/Lotus/providers.json ({"gemini":"...","openai":"..."}) — never in this repo. These models can only
+/// answer; they can't run tools on the Mac, so a fallback reply talks rather than acts.
+enum Fallback {
+    static let keysFile = home.appendingPathComponent("Lotus/providers.json")
+    static let system = "You are Lotus, a warm, concise voice companion. The user's usual assistant (Claude) " +
+        "is temporarily rate-limited, so you're standing in. Reply in one to three short spoken sentences, " +
+        "no markdown. You can't control the Mac right now, so if they asked for an action, say you'll do it " +
+        "once Claude is back, and answer what you can."
+
+    static func keys() -> [String: String] {
+        guard let data = try? Data(contentsOf: keysFile),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
+        return json
+    }
+
+    /// Blocking (called on Agent.run's background queue). Tries Gemini first, then OpenAI.
+    static func answer(_ prompt: String) -> String? {
+        let k = keys()
+        if let key = k["gemini"], !key.isEmpty, let r = gemini(prompt, key: key) { return r }
+        if let key = k["openai"], !key.isEmpty, let r = openai(prompt, key: key) { return r }
+        return nil
+    }
+
+    private static func post(_ url: URL, _ body: [String: Any], headers: [String: String]) -> [String: Any]? {
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        headers.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        let sem = DispatchSemaphore(value: 0)
+        var out: [String: Any]?
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            if let data { out = try? JSONSerialization.jsonObject(with: data) as? [String: Any] }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 32)
+        return out
+    }
+
+    private static func gemini(_ prompt: String, key: String) -> String? {
+        let model = keys()["geminiModel"] ?? "gemini-2.0-flash"
+        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(key)")!
+        let body: [String: Any] = [
+            "systemInstruction": ["parts": [["text": system]]],
+            "contents": [["parts": [["text": prompt]]]],
+        ]
+        guard let json = post(url, body, headers: [:]),
+              let cands = json["candidates"] as? [[String: Any]], let first = cands.first,
+              let content = first["content"] as? [String: Any], let parts = content["parts"] as? [[String: Any]],
+              let text = parts.first?["text"] as? String else { return nil }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func openai(_ prompt: String, key: String) -> String? {
+        let model = keys()["openaiModel"] ?? "gpt-4o-mini"
+        let url = URL(string: "https://api.openai.com/v1/chat/completions")!
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [["role": "system", "content": system], ["role": "user", "content": prompt]],
+        ]
+        guard let json = post(url, body, headers: ["Authorization": "Bearer \(key)"]),
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let text = message["content"] as? String else { return nil }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -1576,6 +1661,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openMemory() { NSWorkspace.shared.open(Agent.memory) }
 
+    /// Opens (creating it the first time) ~/Lotus/providers.json where you paste a Gemini or OpenAI key.
+    /// Lotus uses them only when Claude hits its usage limit, so it never leaves you stuck.
+    @objc func setupFallback() {
+        let file = Fallback.keysFile
+        if !FileManager.default.fileExists(atPath: file.path) {
+try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+let template = """
+{
+  "_help": "When Claude hits its limit, Lotus answers with these instead. A Gemini key is free from aistudio.google.com. Paste your key(s), save, restart Lotus. Keep this file private.",
+  "gemini": "",
+  "openai": ""
+}
+"""
+try? template.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        NSWorkspace.shared.open(file)
+        companion.show("Paste a Gemini or ChatGPT key, save, then restart me. A Gemini key is free.", for: 10)
+    }
+
     /// Shows which macOS permissions Lotus has and opens the page for the first one missing.
     @objc func checkPermissions() {
         let missing = Permissions.Kind.allCases.filter { !$0.granted }
@@ -1770,6 +1875,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item("What Lotus remembers…", #selector(openMemory))
         item("Conversation history…", #selector(openConversations))
         item("Check permissions…", #selector(checkPermissions))
+        item("Backup AI (Gemini/ChatGPT)…", #selector(setupFallback))
         if !FileManager.default.fileExists(atPath: home.appendingPathComponent("Lotus/voice/kokoro-v1.0.onnx").path) {
             item("Install voice and extras…", #selector(installVoice))
         }
