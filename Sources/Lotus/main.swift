@@ -1153,6 +1153,9 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
 
         let input = audio.inputNode
         input.removeTap(onBus: 0)
+        // Echo cancellation: strips Lotus's own voice (from the speaker) out of the mic, so it
+        // doesn't hear and transcribe itself while talking. Harmless if the mic doesn't support it.
+        if !input.isVoiceProcessingEnabled { try? input.setVoiceProcessingEnabled(true) }
         input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in req.append(buffer) }
         audio.prepare()
         do { try audio.start() } catch { show("Microphone error: \(error.localizedDescription)"); return }
