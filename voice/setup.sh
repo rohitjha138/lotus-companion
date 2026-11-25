@@ -11,6 +11,13 @@ command -v uv >/dev/null || { echo "Install uv first: curl -LsSf https://astral.
 [ -x "$DEST/.venv/bin/python" ] || uv venv --python 3.12 "$DEST/.venv"
 uv pip install --python "$DEST/.venv/bin/python" "kokoro-onnx>=0.4" numpy
 
+# Extra-language ears: Nepali/Maithili (and Hindi/English) speech-to-text, offline, via faster-whisper.
+cp "$(dirname "$0")/transcribe.py" "$DEST/"
+# av<14 kept: faster-whisper 1.2 still passes an argument PyAV removed in av 14+.
+uv pip install --python "$DEST/.venv/bin/python" "faster-whisper>=1.0" "av<14"
+"$DEST/.venv/bin/python" -I -c 'from faster_whisper import WhisperModel; WhisperModel("small", device="cpu", compute_type="int8")' \
+  || echo "Whisper model download failed; English/Hindi still work."
+
 for f in kokoro-v1.0.onnx voices-v1.0.bin; do
   if [ ! -s "$DEST/$f" ]; then
     curl -L --fail --progress-bar -o "$DEST/$f.part" "$BASE/$f"

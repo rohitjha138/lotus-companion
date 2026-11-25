@@ -12,7 +12,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/Lotus"
 cp Info.plist "$APP/Contents/Info.plist"
-mkdir -p "$APP/Contents/Resources" && cp uninstall.sh icon/AppIcon.icns voice/setup.sh voice/speak.py tools/image.py extras.sh "$APP/Contents/Resources/"
+mkdir -p "$APP/Contents/Resources" && cp uninstall.sh icon/AppIcon.icns voice/setup.sh voice/speak.py voice/transcribe.py tools/image.py extras.sh "$APP/Contents/Resources/"
 # A fixed local identity keeps macOS permissions across rebuilds (see signing-setup.sh); ad-hoc otherwise.
 IDENTITY="-"
 for name in "Lotus Local Signing" "Ember Local Signing"; do  # Ember = this app's earlier name

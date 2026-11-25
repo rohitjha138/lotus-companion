@@ -172,7 +172,9 @@ enum Agent {
     Listening: the user's words come through speech recognition and may contain misheard words, missing \
     punctuation or mixed languages. Quietly work out what they meant and act on that; don't point out \
     the mistakes. Only correct the user's grammar, pronunciation or language when they ask you to, and \
-    then show the corrected sentence and briefly why.
+    then show the corrected sentence and briefly why. \
+    Reply in the same language the user used — English, Hindi, Nepali or Maithili — in that \
+    language's own script. If they mix languages, match the one they mostly used. When unsure, use English.
 
     Images, like a professional photographer and illustrator: generate them locally with \
     python3 "\(resources)/image.py" "PROMPT" --out ~/Pictures/Lotus/NAME.png (options: --width/--height, \
@@ -676,6 +678,64 @@ enum Fallback {
 
 /// Runs ~/Lotus/voice/speak.py (installed by voice/setup.sh) as a helper that turns text into
 /// natural speech on this Mac. If it isn't installed, Lotus uses the system voice instead.
+/// Offline speech-to-text for Nepali, Maithili (and Hindi/English) via faster-whisper, when Apple's
+/// built-in recognition can't do the language. Keeps one Python process warm and transcribes WAV clips.
+final class Transcriber {
+    private let dir = home.appendingPathComponent("Lotus/voice")
+    private var input: FileHandle?
+    private var buffer = ""
+    private var waiting: [(String?) -> Void] = []  // one per request sent, in order
+    private(set) var ready = false
+
+    var installed: Bool { FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcribe.py").path) }
+
+    func start() {
+        guard !ready, installed else { return }
+        let python = dir.appendingPathComponent(".venv/bin/python")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else { return }
+        let proc = Process()
+        proc.executableURL = python
+        proc.arguments = ["-I", dir.appendingPathComponent("transcribe.py").path]
+        let toW = Pipe(), fromW = Pipe()
+        proc.standardInput = toW
+        proc.standardOutput = fromW
+        proc.standardError = FileHandle.nullDevice
+        fromW.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let chunk = String(decoding: h.availableData, as: UTF8.self)
+            DispatchQueue.main.async { self?.received(chunk) }
+        }
+        proc.terminationHandler = { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.ready = false
+                self.waiting.forEach { $0(nil) }
+                self.waiting = []
+            }
+        }
+        guard (try? proc.run()) != nil else { return }
+        input = toW.fileHandleForWriting
+    }
+
+    private func received(_ chunk: String) {
+        buffer += chunk
+        while let nl = buffer.firstIndex(of: "\n") {
+            let line = String(buffer[..<nl])
+            buffer = String(buffer[buffer.index(after: nl)...])
+            if line == "ready" { ready = true; continue }
+            guard !waiting.isEmpty else { continue }
+            waiting.removeFirst()(line)
+        }
+    }
+
+    /// Transcribes the WAV at `wav`; `done` gets the text, or nil if the engine isn't ready.
+    func transcribe(_ wav: URL, lang: String, done: @escaping (String?) -> Void) {
+        guard ready, let input,
+              let json = try? JSONSerialization.data(withJSONObject: ["wav": wav.path, "lang": lang]) else { return done(nil) }
+        waiting.append(done)
+        input.write(json + Data("\n".utf8))
+    }
+}
+
 final class NeuralVoice: NSObject, AVAudioPlayerDelegate {
     private let dir = home.appendingPathComponent("Lotus/voice")
     private var input: FileHandle?
@@ -1071,10 +1131,27 @@ func lotusMenuIcon() -> NSImage {
 
 final class Companion: NSObject, AVSpeechSynthesizerDelegate {
     let model = Model()
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: defaults.string(forKey: "locale") ?? "en-US"))
+    private var recognizer = SFSpeechRecognizer(locale: Locale(identifier: defaults.string(forKey: "locale") ?? "en-US"))
+
+    /// Switch the language Lotus listens in. Apple ships offline recognition for English and Hindi only
+    /// (Hindi also catches Hinglish); Nepali and Maithili have no offline model, so they work by typing.
+    func setSpeechLanguage(_ id: String) {
+        defaults.set(id, forKey: "locale")
+        stopListening()
+        recognizer = SFSpeechRecognizer(locale: Locale(identifier: id))
+        show(id.hasPrefix("hi") ? "अब मैं हिंदी सुन रही हूँ।" : "I'm listening in English now.", for: 4)
+        if !muted { startListening() }
+    }
     private let audio = AVAudioEngine()
     private let synth = AVSpeechSynthesizer()
     let neural = NeuralVoice()
+    let transcriber = Transcriber()
+    private var recordFile: AVAudioFile?
+    private var recordURL: URL?
+    private var recordedSpeech = false
+    private var quietFor = 0.0
+    /// Nepali/Maithili mode: Apple can't hear them, so tap-to-talk records a clip and Whisper transcribes it.
+    var whisperMode: Bool { (defaults.string(forKey: "hearing") ?? "en") == "whisper" }
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var generation = 0  // ignores callbacks from recognition tasks we already stopped
@@ -1118,6 +1195,7 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
         super.init()
         synth.delegate = self
         neural.start()
+        if whisperMode { transcriber.start() }
     }
 
     func requestPermissionsAndStart() {
@@ -1140,6 +1218,7 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     func startListening() {
+        guard !whisperMode else { return }  // Nepali/Maithili mode is tap-to-talk; nothing listens continuously
         guard !muted, task == nil, let recognizer, recognizer.isAvailable else { return }  // runs during speech too, for barge-in
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
@@ -1183,11 +1262,84 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
     func wake() {
         if busy { return stop() }
         guard !muted else { show("I'm muted. Unmute me from the menu bar.", for: 4); return }
+        if whisperMode { return recordUtterance() }
         stopListening()
         awake = true
         show("I'm listening…")
         startListening()
         armSilence("", wait: 6)
+    }
+
+    /// Records one spoken clip (stops on a short silence), then transcribes it offline with Whisper.
+    /// Used for Nepali/Maithili, which Apple's recognition can't hear.
+    private func recordUtterance() {
+        guard transcriber.installed else {
+            show("Nepali/Maithili need the language pack. Ask me to install extras, or run ./extras.sh.", for: 8)
+            defaults.set("en", forKey: "hearing")
+            return
+        }
+        transcriber.start()
+        stopListening()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("lotus-\(UUID().uuidString).wav")
+        let input = audio.inputNode
+        let fmt = input.outputFormat(forBus: 0)
+        guard let file = try? AVAudioFile(forWriting: url, settings: fmt.settings) else { show("Microphone error.", for: 4); return }
+        recordFile = file; recordURL = url; recordedSpeech = false; quietFor = 0
+        awake = true; model.mood = .listening; show("सुन रही हूँ… (listening — pause when done)")
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buf, _ in
+            try? file.write(from: buf)
+            var sum: Float = 0
+            if let ch = buf.floatChannelData?[0] {
+                let n = Int(buf.frameLength)
+                for i in 0..<n { sum += ch[i] * ch[i] }
+                sum = n > 0 ? (sum / Float(n)).squareRoot() : 0
+            }
+            let seconds = Double(buf.frameLength) / fmt.sampleRate
+            DispatchQueue.main.async { self?.recordTick(rms: sum, seconds: seconds) }
+        }
+        audio.prepare()
+        do { try audio.start() } catch { show("Microphone error: \(error.localizedDescription)", for: 4); return }
+        silence?.invalidate()
+        silence = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in self?.finishRecording() }
+    }
+
+    private func recordTick(rms: Float, seconds: Double) {
+        guard recordFile != nil else { return }
+        if rms > 0.02 { recordedSpeech = true; quietFor = 0 }       // speaking
+        else if recordedSpeech { quietFor += seconds; if quietFor > 1.3 { finishRecording() } }  // paused → done
+    }
+
+    private func finishRecording() {
+        silence?.invalidate()
+        audio.stop()
+        audio.inputNode.removeTap(onBus: 0)
+        recordFile = nil
+        guard let url = recordURL else { return }
+        recordURL = nil
+        guard recordedSpeech else { model.mood = .idle; try? FileManager.default.removeItem(at: url); return }
+        model.mood = .working; show("…")
+        transcriber.transcribe(url, lang: "auto") { [weak self] text in
+            try? FileManager.default.removeItem(at: url)
+            guard let self else { return }
+            if let text, !text.isEmpty { self.ask(text) }
+            else { self.model.mood = .idle; self.show("I didn't catch that — tap me and try again.", for: 4) }
+        }
+    }
+
+    /// Switches into tap-to-talk Nepali/Maithili mode (warms up the Whisper engine).
+    func enableWhisper() {
+        defaults.set("whisper", forKey: "hearing")
+        stopListening()
+        guard transcriber.installed else {
+            show("Nepali/Maithili need the language pack. Ask me to install extras, or run ./extras.sh.", for: 8)
+            defaults.set("en", forKey: "hearing")
+            startListening()
+            return
+        }
+        transcriber.start()
+        model.mood = .idle
+        show("Tap me and talk — Nepali, Maithili, Hindi or English. (Pause when you're done.)", for: 7)
     }
 
     private func heard(_ result: SFSpeechRecognitionResult?, _ error: Error?) {
@@ -1307,17 +1459,22 @@ final class Companion: NSObject, AVSpeechSynthesizerDelegate {
 
     private func say(_ text: String) {
         let spoken = ["**", "*", "#", "`"].reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
-        let kokoro = defaults.string(forKey: "kokoroVoice") ?? (voiceStyle == "deep" ? "am_michael" : "af_heart")
         // Words appear the moment the voice starts, not before.
         let begin = { [weak self] in self?.model.mood = .speaking; self?.show(text); self?.startListening() }
+        // Hindi, Nepali and Maithili share the Devanagari script. Kokoro has natural Hindi voices too,
+        // so use them — Nepali/Maithili ride on the Hindi voice (same script) and sound human, not robotic.
+        let devanagari = spoken.unicodeScalars.contains { (0x900...0x97F).contains($0.value) }
+        let kokoro = devanagari
+            ? (voiceStyle == "deep" ? "hm_omega" : "hf_alpha")
+            : (defaults.string(forKey: "kokoroVoice") ?? (voiceStyle == "deep" ? "am_michael" : "af_heart"))
         neural.speak(spoken, voice: kokoro, started: begin) { [weak self] ok in
-            if ok { self?.doneSpeaking() } else { begin(); self?.systemSpeak(spoken) }
+            if ok { self?.doneSpeaking() } else { begin(); self?.systemSpeak(spoken, hindi: devanagari) }  // Apple voice only if Kokoro fails
         }
     }
 
-    private func systemSpeak(_ spoken: String) {
+    private func systemSpeak(_ spoken: String, hindi: Bool = false) {
         let utterance = AVSpeechUtterance(string: spoken)
-        utterance.voice = voice
+        utterance.voice = hindi ? (AVSpeechSynthesisVoice(language: "hi-IN") ?? voice) : voice
         utterance.pitchMultiplier = voiceStyle == "deep" ? 0.95 : 1.05  // small shifts only; big ones sound robotic
         synth.speak(utterance)
     }
@@ -1759,6 +1916,9 @@ try? template.write(to: file, atomically: true, encoding: .utf8)
 
     @objc func voiceCute() { companion.voiceStyle = "cute"; buildMenu() }
     @objc func voiceDeep() { companion.voiceStyle = "deep"; buildMenu() }
+    @objc func hearEnglish() { defaults.set("en", forKey: "hearing"); companion.setSpeechLanguage("en-US"); buildMenu() }
+    @objc func hearHindi() { defaults.set("hi", forKey: "hearing"); companion.setSpeechLanguage("hi-IN"); buildMenu() }
+    @objc func hearMore() { companion.enableWhisper(); buildMenu() }
 
     /// Quitting Lotus stops everything it started: the running request, phone access and the voice helper
     /// (which exits on its own when Lotus goes away).
@@ -1874,6 +2034,10 @@ try? template.write(to: file, atomically: true, encoding: .utf8)
         menu.addItem(.separator())
         item("Voice: Cute", #selector(voiceCute), on: companion.voiceStyle == "cute")
         item("Voice: Deep", #selector(voiceDeep), on: companion.voiceStyle == "deep")
+        let hearing = defaults.string(forKey: "hearing") ?? "en"
+        item("Hearing: English", #selector(hearEnglish), on: hearing == "en")
+        item("Hearing: हिन्दी (Hindi)", #selector(hearHindi), on: hearing == "hi")
+        item("Hearing: नेपाली / मैथिली (tap to talk)", #selector(hearMore), on: hearing == "whisper")
         item("Says hi now and then", #selector(toggleChatty), on: defaults.object(forKey: "chatty") as? Bool ?? true)
         item("Mute microphone", #selector(toggleMute), "m", on: companion.muted)
         item("No limits (skip safety checks)", #selector(toggleNoLimits), on: defaults.string(forKey: "permissionMode") == "bypassPermissions")
